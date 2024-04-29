@@ -1,0 +1,248 @@
+\documentclass{ctexart}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{makecell}
+\usepackage{listings}
+\usepackage{xcolor}
+
+\usepackage{zhnumber}
+\renewcommand{\thesection}{\zhnum{section}}
+\renewcommand{\thesubsection}{\arabic{subsection}}
+
+\newcommand\ful[2][4cm]{\underline{\makebox[#1][c]{#2}}}
+
+\usepackage[top=2.54cm, bottom=2.54cm, left=3.18cm, right=3.18cm]{geometry}
+
+\title{\textbf{数据信息安全课程设计 \\ 基于AES的时间锁加密系统设计}}
+\author{
+    \textbf{姓名：}傅子骏
+    \textbf{学号：}2021316101119
+}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+
+\newpage
+
+\section{理论分析}
+
+\subsection{介绍}
+
+时间锁加密（Time-Locked Encryption）是将信息保密到指定时间后才能解密的一种方法。
+常见的TLE加密手段包括分布式密钥以及配合区块链智能合约实现。
+前者可以通过Shamir门限方案，将密钥分割成n份，分发到服务器保存，只有到达门限k时，才能推出密钥；
+后者使用ElGamal算法，使用公钥加密信息，并将私钥发送给以太坊合约，使得区块链矿工可以通过挖矿找到对应的私钥，
+通过设置谜题难度控制求解私钥的时间。
+
+\subsection{Sharmir门限方案}
+时间服务器TS通过NTP协议访问可信主机，并获取当前准确时间，同时TS保存有部分私钥，这部分私钥被称为子密钥，通过Shamir门限方案，密钥s被分为n份毫不相关的部分信息，只有当解密者同时拥有k份子密钥时，才能恢复出密文s。这种方案被称为(k, n)-秘密分割门限方案。
+
+\subsection{分割AES密钥}
+
+本次课设我将分发n份AES子密钥，只有当解密者同时拥有全部密钥，才能恢复密钥。本次课设我将使用AES128，ECB模式进行加密数据，AES128意味着密钥有16 bytes，通过建立n个服务器，将密钥分成n份，每份（16 / n） bytes，这里假设服务器数量不超过16，对于无法除尽的情况，最后一台服务器保存剩下的bytes。
+
+\subsection{密钥分发}
+
+\subsubsection{RSA算法}
+
+在生产实践中，为了保证双向通信的安全，应当使用RSA算法在两端分别生成私钥和公钥，双方交换公钥，双方生成随机数m、n，
+各自对随机数加密并交换加密数据，双方使用私钥验证，验证通过应当交换AES密钥，以增加通信的效率。
+
+\subsubsection{Bcrypt算法}
+
+用户密码往往有规律，如被有心人掌握很容易通过掩码攻击等方式破解，如果使用密钥衍生技术生成强度更高的密码，以此作为AES的密钥将会是很好的做法。
+
+\subsection{通信协议}
+
+由于分发密钥需要保证可靠性、完整性，我们应当选择TCP/IP协议作为密钥分发的通信协议。为了减少依赖数量，提升编译速度，我们自己设计通信协议。
+
+\newpage
+\subsubsection{分发密钥协议}
+
+\begin{table}[htbp]
+\centering
+\caption{分发密钥字节流}
+\label{tab:byte_stream}
+\begin{tabular}{lc}
+\toprule
+\textbf{描述} & \textbf{字节} \\
+\midrule
+OPCODE & + \\
+包编号 & 1 \\
+AES子密钥长度 & 2 \\
+AES子密钥 & 3——3 + 子密钥长度 \\
+MD5摘要 & 3 + 子密钥长度——19 + 子密钥长度 \\
+时间戳 & 19 + 子密钥长度——最后 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+时间服务器响应的OPCODE为"+"或"-"，前者表示收录成功，后者表示操作失败。
+
+\begin{table}[htbp]
+\centering
+\caption{分发密钥相应字节流}
+\label{tab:byte_stream}
+\begin{tabular}{lc}
+\toprule
+\textbf{描述} & \textbf{字节} \\
+\midrule
+OPCODE & +/- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{请求AES密钥}
+\begin{table}[htbp]
+\centering
+\caption{请求密钥字节流}
+\label{tab:byte_stream}
+\begin{tabular}{lc}
+\toprule
+\textbf{描述} & \textbf{字节} \\
+\midrule
+OPCODE & - \\
+时间戳 & 2——最后 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+请求AES密钥相应字节流的OPCODE同上，如果OPCODE为"+"，则第二字节为AES子密钥长度，剩下的字节为AES子密钥。
+
+\newpage
+\section{编程实现}
+
+\subsection{准备}
+
+\subsubsection{Rust}
+
+在编程语言的选择上，使用了本人比较喜欢的语言Rust。Rust 速度惊人且内存利用率极高。由于没有运行时和垃圾回收，它能够胜任对性能要求特别高的服务，可以在嵌入式设备上运行，还能轻松和其他语言集成。Rust 丰富的类型系统和所有权模型保证了内存安全和线程安全，让我在编译期就能够消除各种各样的错误。Rust 拥有出色的文档、友好的编译器和清晰的错误提示信息， 还集成了一流的工具——包管理器和构建工具， 智能地自动补全和类型检验的多编辑器支持， 以及自动格式化代码等等。
+
+\subsection{Cli}
+
+为了方便使用期间，我们通过clap构建Cli。Cli是命令行参数解析工具（Command Line Argument Parser for Rust）。目前可用的Cli命令如下，使用cargo run -- --help打印所有可用选项。
+
+\begin{lstlisting}
+Usage: tle.exe <COMMAND>
+
+Commands:
+  server  Start a server
+  client  Start a client
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+\end{lstlisting}
+
+本次课设重心在于客户端的加密与解密操作。
+加密时指定输入文件、密码与服务器，通过-s参数可指定多组服务器；
+解密时指定输入文件与服务器，若解密条件已达成则解密成功。
+客户端的help打印如下。
+
+\begin{lstlisting}
+Usage: tle.exe client <COMMAND>
+
+Commands:
+  encrypt
+  decrypt
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
+\end{lstlisting}
+
+客户端可以使用如下命令加密数据并分发到指定服务器。
+\begin{center}
+cargo run -- encrypt -i <INPUT> -s <IP:PORT> -p <PASSWORD> -t <TIMESTAMP>
+\end{center}
+
+到达约定解密时间后通过运行如下命令解密。
+\begin{center}
+cargo run -- decrypt -i <INPUT> -s <IP:PORT>
+\end{center}
+
+我们使用Rust过程宏生成Cli所需要的参数。本程序接受第一个子参数为选择类型，服务端和客户端均可由一个程序开启，选择客户端时，可选操作有加密和解密。
+
+\subsection{可信NTP服务器}
+
+我们选择阿里云作为可信NTP服务器。通过发起NTP请求获取准确时间。模块定义于src/time.rs。需要注意的是，NTP返回的时间戳为NTP时间戳，NTP时间戳的起始时间为1900-01-01，需要转换到UNIX时间戳，通过减去转换常数获得。
+
+\begin{lstlisting}
+use ntp::formats::timestamp::EPOCH_DELTA;
+packet.transmit_time.sec as u64 - EPOCH_DELTA as u64
+\end{lstlisting}
+
+\subsection{如何标识一个文件}
+
+通过对原文件进行MD5运算，获得对该文件的唯一标识，不仅可以用于服务端检索密钥，也可以用于验证解密后文件的正确性。
+
+\subsection{加密后内容的保存}
+
+文件加载：首先，程序通过load\_file函数加载需要加密的文件内容到内存中。
+
+密码处理：用户输入的密码通过bcrypt\_password函数处理，生成一个用于AES加密的16字节的密钥。
+
+文件内容MD5计算：使用file\_md5函数计算加载的文件内容的MD5散列值。
+
+文件加密：encrypt\_file函数使用AES算法和生成的密钥对文件内容进行加密。这里使用的是ECB模式的AES加密，并且可能使用了PKCS7填充。
+
+保存加密文件：加密后的文件内容与文件的MD5散列值一起被写入到一个新的文件中。新文件的命名是在原始文件名的基础上添加了.tle扩展名。
+
+\newpage
+\section{程序测试}
+
+首先我们开启三个终端，两个用于服务器，分别开放端口8001和8002。
+命令为
+\begin{center}
+    cargo run -- server -p 8001 \\
+    cargo run -- server -p 8002
+\end{center}
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/1.png}
+    \caption{开启两个服务}
+    \label{fig:t1}
+\end{figure}
+
+编写用于加密的文件test.txt，内容如图所示。
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/2.png}
+    \caption{加密文件并分发密钥}
+    \label{fig:t2}
+\end{figure}
+
+\newpage
+在规定时间未到达时测试，文件解密失败。
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/3.png}
+    \caption{解密失败}
+    \label{fig:t3}
+\end{figure}
+
+在指定时间之后解密，解密成功，解密得到的文件dec\_test.txt内容与test.txt一致。
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/4.png}
+    \caption{解密成功}
+    \label{fig:t4}
+\end{figure}
+
+
+\newpage
+\section{总结}
+本次课设综合AES、MD5、Bcrypt密钥衍生算法、Socket等内容，提出切割AES密钥并保存到服务器，在指定时间之后才能解密的想法，并加以实现，编写过程中收获了很多，例如MD5与hex的转换等，遇到的最大问题在于Socket，约定协议并解析的过程其乐无穷，最终完成本课设。
+
+\newpage
+\section{附件}
+
+本次实验所有代码已开源，并放在本人的Github仓库中：https://github.com/Helio609/tle
+
+\end{document}
